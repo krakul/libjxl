@@ -96,6 +96,9 @@ bool SpeedStats::Print(size_t worker_threads) {
   if (!GetSummary(&s)) {
     return false;
   }
+
+  fprintf(stderr, "Time: %.3f s [%.3f, %.3f].\n", s.central_tendency, s.min, s.max);
+
   std::string mps_stats = SummaryStat(xsize_ * ysize_ * 1e-6, "MP", s);
   std::string mbs_stats = SummaryStat(file_size_ * 1e-6, "MB", s);
 
