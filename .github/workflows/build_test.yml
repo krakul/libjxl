@@ -164,9 +164,9 @@ jobs:
         # of the same Pull Request it will reuse the cache if still around. For
         # either Pull Requests or new pushes to main, this will use the parent
         # hash as the starting point from the restore-keys entry.
-        key: ${{ runner.os }}-${{ github.sha }}-${{ matrix.name }}
+        key: build-${{ runner.os }}-${{ github.sha }}-${{ matrix.name }}
         restore-keys: |
-          ${{ runner.os }}-${{ steps.git-env.outputs.parent }}-${{ matrix.name }}
+          build-${{ runner.os }}-${{ steps.git-env.outputs.parent }}-${{ matrix.name }}
     - name: Build
       if: matrix.name != 'coverage' || env.WILL_RUN_TESTS == 'true'
       run: |
@@ -209,7 +209,7 @@ jobs:
           exit 1
         fi
         # Test that the built binaries run.
-        echo -e -n "PF\n1 1\n-1.0\nrrrrggggbbbb" > test.pfm
+        echo -e -n "PF\n1 1\n-1.0\n\0\0\x80\x3f\0\0\x80\x3f\0\0\x80\x3f" > test.pfm
         build-example/encode_oneshot test.pfm test.jxl
         build-example/encode_oneshot_static test.pfm test-static.jxl
         build-example/decode_oneshot test.jxl dec.pfm dec.icc
@@ -266,7 +266,7 @@ jobs:
          - msystem: clang64
          - msystem: mingw32
            # TODO(eustas): investigate HWY Mul failures
-           disable_tests: HwyMulTestGroup/HwyMulTest\.TestAllMulHigh/Emu128|HwyMulTestGroup/HwyMulTest\.TestAllMulFixedPoint15/Emu128
+           disable_tests: HwyMulTestGroup/HwyMulTest\.TestAllMulHigh/EMU128|HwyMulTestGroup/HwyMulTest\.TestAllMulFixedPoint15/EMU128
          - msystem: clang32
            # TODO(eustas): investigate HWY Sort and JXL ANS failures
            disable_tests: SortTestGroup/SortTest\.TestAllSort/.*|ANSTest\.RandomUnbalancedStreamRoundtrip3|ANSTest\.RandomUnbalancedStreamRoundtripBig
@@ -363,9 +363,9 @@ jobs:
       uses: actions/cache@v2
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ runner.os }}-${{ github.sha }}-${{ matrix.variant }}
+        key: build-wasm-${{ runner.os }}-${{ github.sha }}-${{ matrix.variant }}
         restore-keys: |
-          ${{ runner.os }}-${{ steps.git-env.outputs.parent }}-${{ matrix.variant }}
+          build-wasm-${{ runner.os }}-${{ steps.git-env.outputs.parent }}-${{ matrix.variant }}
 
     - name: Install node
       uses: actions/setup-node@v3

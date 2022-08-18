@@ -16,7 +16,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "jxl/cms_interface.h"
 #include "jxl/codestream_header.h"
 #include "jxl/color_encoding.h"
 #include "jxl/jxl_export.h"
@@ -429,7 +428,7 @@ JXL_EXPORT JxlDecoderStatus JxlDecoderSkipCurrentFrame(JxlDecoder* dec);
  *
  * DEPRECATED: this function will be removed in the future.
  */
-JXL_EXPORT JXL_DEPRECATED JxlDecoderStatus
+JXL_DEPRECATED JXL_EXPORT JxlDecoderStatus
 JxlDecoderDefaultPixelFormat(const JxlDecoder* dec, JxlPixelFormat* format);
 
 /**
@@ -955,7 +954,7 @@ JXL_EXPORT JxlDecoderStatus JxlDecoderGetExtraChannelBlendInfo(
  * @deprecated The DC feature in this form will be removed. Use @ref
  *     JxlDecoderFlushImage for progressive rendering.
  */
-JXL_EXPORT JXL_DEPRECATED JxlDecoderStatus JxlDecoderDCOutBufferSize(
+JXL_DEPRECATED JXL_EXPORT JxlDecoderStatus JxlDecoderDCOutBufferSize(
     const JxlDecoder* dec, const JxlPixelFormat* format, size_t* size);
 
 /**
@@ -976,7 +975,7 @@ JXL_EXPORT JXL_DEPRECATED JxlDecoderStatus JxlDecoderDCOutBufferSize(
  * @deprecated The DC feature in this form will be removed. Use @ref
  *     JxlDecoderFlushImage for progressive rendering.
  */
-JXL_EXPORT JXL_DEPRECATED JxlDecoderStatus JxlDecoderSetDCOutBuffer(
+JXL_DEPRECATED JXL_EXPORT JxlDecoderStatus JxlDecoderSetDCOutBuffer(
     JxlDecoder* dec, const JxlPixelFormat* format, void* buffer, size_t size);
 
 /**

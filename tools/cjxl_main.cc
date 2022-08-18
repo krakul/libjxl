@@ -36,14 +36,15 @@
 #include "lib/extras/dec/pgx.h"
 #include "lib/extras/dec/pnm.h"
 #include "lib/extras/time.h"
-#include "lib/jxl/base/file_io.h"
 #include "lib/jxl/base/override.h"
 #include "lib/jxl/base/printf_macros.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/exif.h"
 #include "lib/jxl/size_constraints.h"
 #include "tools/args.h"
 #include "tools/cmdline.h"
 #include "tools/codec_config.h"
+#include "tools/file_io.h"
 #include "tools/speed_stats.h"
 
 namespace jpegxl {
@@ -196,7 +197,7 @@ struct CompressArgs {
                            "Use the progressive mode for AC.", &progressive_ac,
                            &SetBooleanTrue, 1);
 
-    opt_qprogressive_ac_id = cmdline->AddOptionFlag(
+    cmdline->AddOptionFlag(
         '\0', "qprogressive_ac",
         "Use the progressive mode for AC with shift quantization.",
         &qprogressive_ac, &SetBooleanTrue, 1);
@@ -350,7 +351,7 @@ struct CompressArgs {
         &modular_palette_colors, &ParseSigned, 1);
 
     cmdline->AddOptionFlag(
-        '\0', "moular_lossy_palette",
+        '\0', "modular_lossy_palette",
         "[modular encoding] quantize to a palette that has fewer entries than "
         "would be necessary for perfect preservation; for the time being, it "
         "is "
@@ -423,9 +424,6 @@ struct CompressArgs {
   size_t num_reps = 1;
   float intensity_target = 0;
 
-  // Filename for the user provided saliency-map.
-  std::string saliency_map_filename;
-
   // Whether to perform lossless transcoding with kVarDCT or kJPEG encoding.
   // If true, attempts to load JPEG coefficients instead of pixels.
   // Reset to false if input image is not a JPEG.
@@ -481,23 +479,21 @@ struct CompressArgs {
   CommandLineParser::OptionId opt_responsive_id = -1;
   CommandLineParser::OptionId opt_distance_id = -1;
   CommandLineParser::OptionId opt_quality_id = -1;
-  CommandLineParser::OptionId opt_qprogressive_ac_id = -1;
   CommandLineParser::OptionId opt_modular_group_size_id = -1;
 };
 
 const char* ModeFromArgs(const CompressArgs& args) {
   if (args.lossless_jpeg) return "JPEG";
-  if (args.modular == jxl::Override::kOn || args.distance == 0 ||
-      args.quality == 100)
+  if (args.modular == jxl::Override::kOn || args.distance == 0)
     return "Modular";
   return "VarDCT";
 }
 
-std::string QualityFromArgs(const CompressArgs& args) {
+std::string DistanceFromArgs(const CompressArgs& args) {
   char buf[100];
   if (args.lossless_jpeg) {
     snprintf(buf, sizeof(buf), "lossless transcode");
-  } else if (args.distance == 0 || args.quality == 100) {
+  } else if (args.distance == 0) {
     snprintf(buf, sizeof(buf), "lossless");
   } else {
     snprintf(buf, sizeof(buf), "d%.3f", args.distance);
@@ -508,7 +504,7 @@ std::string QualityFromArgs(const CompressArgs& args) {
 void PrintMode(jxl::extras::PackedPixelFile& ppf, const double decode_mps,
                size_t num_bytes, const CompressArgs& args) {
   const char* mode = ModeFromArgs(args);
-  const std::string quality = QualityFromArgs(args);
+  const std::string distance = DistanceFromArgs(args);
   if (args.lossless_jpeg) {
     fprintf(stderr, "Read JPEG image with %" PRIuS " bytes.\n", num_bytes);
   } else {
@@ -519,7 +515,7 @@ void PrintMode(jxl::extras::PackedPixelFile& ppf, const double decode_mps,
   }
   fprintf(stderr, "Encoding [%s%s, %s, effort: %" PRIuS,
           (args.container == jxl::Override::kOn ? "Container | " : ""), mode,
-          quality.c_str(), args.effort);
+          distance.c_str(), args.effort);
   if (args.container == jxl::Override::kOn) {
     if (args.lossless_jpeg && args.jpeg_store_metadata)
       fprintf(stderr, " | JPEG reconstruction data");
@@ -537,30 +533,6 @@ void PrintMode(jxl::extras::PackedPixelFile& ppf, const double decode_mps,
 }  // namespace jpegxl
 
 namespace {
-/**
- * Writes bytes to file.
- */
-bool WriteFile(const std::vector<uint8_t>& bytes, const char* filename) {
-  FILE* file = fopen(filename, "wb");
-  if (!file) {
-    std::cerr << "Could not open file: " << filename << " for writing"
-              << std::endl
-              << "Error: " << strerror(errno) << std::endl;
-    return false;
-  }
-  if (fwrite(bytes.data(), sizeof(uint8_t), bytes.size(), file) !=
-      bytes.size()) {
-    std::cerr << "Could not write bytes to file: " << filename << std::endl
-              << "Error: " << strerror(errno) << std::endl;
-    return false;
-  }
-  if (fclose(file) != 0) {
-    std::cerr << "Could not close file: " << filename << std::endl
-              << "Error: " << strerror(errno) << std::endl;
-    return false;
-  }
-  return true;
-}
 
 template <typename T>
 void SetFlagFrameOptionOrDie(const char* flag_name, T flag_value,
@@ -584,52 +556,41 @@ void SetDistanceFromFlags(JxlEncoderFrameSettings* jxl_encoder_frame_settings,
                           const jxl::extras::Codec& codec) {
   bool distance_set = cmdline->GetOption(args->opt_distance_id)->matched();
   bool quality_set = cmdline->GetOption(args->opt_quality_id)->matched();
-
-  if (distance_set && quality_set) {
-    std::cerr << "Must not set both --distance and --quality." << std::endl;
-    exit(EXIT_FAILURE);
-  }
-  if (distance_set) {
-    if (JXL_ENC_SUCCESS != JxlEncoderSetFrameDistance(
-                               jxl_encoder_frame_settings, args->distance)) {
-      std::cerr << "Setting --distance parameter failed." << std::endl;
+  if (quality_set) {
+    if (distance_set) {
+      std::cerr << "Must not set both --distance and --quality." << std::endl;
       exit(EXIT_FAILURE);
     }
-    return;
-  }
-  if (quality_set) {
     double distance = args->quality >= 100 ? 0.0
                       : args->quality >= 30
                           ? 0.1 + (100 - args->quality) * 0.09
                           : 6.4 + pow(2.5, (30 - args->quality) / 5.0) / 6.25;
-    if (JXL_ENC_SUCCESS !=
-        JxlEncoderSetFrameDistance(jxl_encoder_frame_settings, distance)) {
-      std::cerr << "Setting --quality parameter failed." << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    return;
+    args->distance = distance;
+    distance_set = true;
   }
-  // No flag set, but input is JPG or GIF: Use distance 0 default.
-  if (codec == jxl::extras::Codec::kJPG || codec == jxl::extras::Codec::kGIF) {
-    if (JXL_ENC_SUCCESS ==
-        JxlEncoderSetFrameDistance(jxl_encoder_frame_settings, 0.0)) {
-      std::cerr << "Setting 'lossless' default for GIF or JPEG input."
-                << std::endl;
-    }
+  if (!distance_set) {
+    bool lossy_input = (codec == jxl::extras::Codec::kJPG ||
+                        codec == jxl::extras::Codec::kGIF);
+    args->distance = lossy_input ? 0.0 : 1.0;
+  }
+  if (JXL_ENC_SUCCESS !=
+      JxlEncoderSetFrameDistance(jxl_encoder_frame_settings, args->distance)) {
+    std::cerr << "Setting frame distance failed." << std::endl;
+    exit(EXIT_FAILURE);
   }
 }
 
 using flag_check_fn = std::function<std::string(int64_t)>;
 using flag_check_float_fn = std::function<std::string(float)>;
 
-bool IsJPG(const jxl::PaddedBytes& image_data) {
+bool IsJPG(const std::vector<uint8_t>& image_data) {
   return (image_data.size() >= 2 && image_data[0] == 0xFF &&
           image_data[1] == 0xD8);
 }
 
 // TODO(tfish): Replace with non-C-API library function.
 // Implementation is in extras/.
-jxl::Status GetPixeldata(const jxl::PaddedBytes& image_data,
+jxl::Status GetPixeldata(const std::vector<uint8_t>& image_data,
                          const jxl::extras::ColorHints& color_hints,
                          jxl::extras::PackedPixelFile& ppf,
                          jxl::extras::Codec& codec) {
@@ -675,11 +636,6 @@ jxl::Status GetPixeldata(const jxl::PaddedBytes& image_data,
   if (codec == jxl::extras::Codec::kUnknown) {
     return JXL_FAILURE("Codecs failed to decode input.");
   }
-
-  // TODO(tfish): Migrate this:
-  // if (!skip_ppf_conversion) {
-  //   JXL_RETURN_IF_ERROR(ConvertPackedPixelFileToCodecInOut(ppf, pool, io));
-  // }
   return true;
 }
 
@@ -722,12 +678,12 @@ int main(int argc, char** argv) {
   // Depending on flags-settings, we want to either load a JPEG and
   // faithfully convert it to JPEG XL, or load (JPEG or non-JPEG)
   // pixel data.
-  jxl::PaddedBytes image_data;
+  std::vector<uint8_t> image_data;
   jxl::extras::PackedPixelFile ppf;
   jxl::extras::Codec codec = jxl::extras::Codec::kUnknown;
   double decode_mps = 0;
   size_t pixels = 0;
-  if (!ReadFile(args.file_in, &image_data)) {
+  if (!jpegxl::tools::ReadFile(args.file_in, &image_data)) {
     std::cerr << "Reading image data failed." << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -920,12 +876,8 @@ int main(int argc, char** argv) {
                    });
     }
     {  // Progressive/responsive mode settings.
-      bool qprogressive_ac_set =
-          cmdline.GetOption(args.opt_qprogressive_ac_id)->matched();
-      int32_t qprogressive_ac = args.qprogressive_ac ? 1 : 0;
       bool responsive_set =
           cmdline.GetOption(args.opt_responsive_id)->matched();
-      int32_t responsive = args.responsive ? 1 : 0;
 
       process_flag(
           "progressive_dc", args.progressive_dc,
@@ -937,18 +889,17 @@ int main(int argc, char** argv) {
           jxl_encoder_frame_settings, JXL_ENC_FRAME_SETTING_PROGRESSIVE_AC);
 
       if (args.progressive) {
-        qprogressive_ac = 1;
-        qprogressive_ac_set = true;
-        responsive = 1;
+        args.qprogressive_ac = true;
+        args.responsive = 1;
         responsive_set = true;
       }
       if (responsive_set) {
-        SetFlagFrameOptionOrDie("responsive", responsive,
+        SetFlagFrameOptionOrDie("responsive", args.responsive,
                                 jxl_encoder_frame_settings,
                                 JXL_ENC_FRAME_SETTING_RESPONSIVE);
       }
-      if (qprogressive_ac_set) {
-        SetFlagFrameOptionOrDie("qprogressive_ac", qprogressive_ac,
+      if (args.qprogressive_ac) {
+        SetFlagFrameOptionOrDie("qprogressive_ac", 1,
                                 jxl_encoder_frame_settings,
                                 JXL_ENC_FRAME_SETTING_QPROGRESSIVE_AC);
       }
@@ -1000,6 +951,14 @@ int main(int argc, char** argv) {
                                 : "Invalid --modular_nb_prev_channels. Valid "
                                   "range is {-1, 0, 1, ..., 11}.\n";
                    });
+      if (args.modular_lossy_palette) {
+        if (args.progressive || args.qprogressive_ac) {
+          fprintf(stderr,
+                  "WARNING: --modular_lossy_palette is ignored in "
+                  "progressive mode.\n");
+          args.modular_lossy_palette = false;
+        }
+      }
       SetFlagFrameOptionOrDie("modular_lossy_palette",
                               static_cast<int32_t>(args.modular_lossy_palette),
                               jxl_encoder_frame_settings,
@@ -1043,6 +1002,10 @@ int main(int argc, char** argv) {
     }
     if (use_container) args.container = jxl::Override::kOn;
 
+    if (!ppf.metadata.exif.empty()) {
+      jxl::InterpretExif(ppf.metadata.exif, &ppf.info.orientation);
+    }
+
     if (JXL_ENC_SUCCESS !=
         JxlEncoderUseContainer(jxl_encoder, static_cast<int>(use_container))) {
       std::cerr << "JxlEncoderUseContainer failed." << std::endl;
@@ -1081,10 +1044,7 @@ int main(int argc, char** argv) {
         basic_info.intensity_target = args.intensity_target;
         basic_info.num_extra_channels = num_alpha_channels;
         basic_info.num_color_channels = ppf.info.num_color_channels;
-        const bool lossless =
-            args.distance == 0 ||
-            (cmdline.GetOption(args.opt_quality_id)->matched() &&
-             args.quality == 100);
+        const bool lossless = args.distance == 0;
         basic_info.uses_original_profile = lossless;
         if (args.override_bitdepth != 0) {
           basic_info.bits_per_sample = args.override_bitdepth;
@@ -1228,7 +1188,7 @@ int main(int argc, char** argv) {
   }
 
   if (args.file_out) {
-    if (!WriteFile(compressed, args.file_out)) {
+    if (!jpegxl::tools::WriteFile(args.file_out, compressed)) {
       std::cerr << "Could not write jxl file." << std::endl;
       return EXIT_FAILURE;
     }

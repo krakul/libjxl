@@ -62,8 +62,12 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/compressed_dc.cc
   jxl/compressed_dc.h
   jxl/convolve-inl.h
-  jxl/convolve.cc
   jxl/convolve.h
+  jxl/convolve_separable5.cc
+  jxl/convolve_separable7.cc
+  jxl/convolve_slow.cc
+  jxl/convolve_symmetric3.cc
+  jxl/convolve_symmetric5.cc
   jxl/dct-inl.h
   jxl/dct_block-inl.h
   jxl/dct_scales.cc
@@ -106,7 +110,6 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/entropy_coder.h
   jxl/epf.cc
   jxl/epf.h
-  jxl/exif.cc
   jxl/exif.h
   jxl/fast_dct-inl.h
   jxl/fast_dct.cc

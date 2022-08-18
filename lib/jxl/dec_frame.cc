@@ -478,24 +478,28 @@ Status FrameDecoder::ProcessACGroup(size_t ac_group_id,
 
   // don't limit to image dimensions here (is done in DecodeGroup)
   const Rect mrect(x, y, group_dim, group_dim);
-  for (size_t i = 0; i < frame_header_.passes.num_passes; i++) {
+  bool modular_ready = false;
+  size_t pass0 = decoded_passes_per_ac_group_[ac_group_id];
+  size_t pass1 =
+      force_draw ? frame_header_.passes.num_passes : pass0 + num_passes;
+  for (size_t i = pass0; i < pass1; ++i) {
     int minShift, maxShift;
     frame_header_.passes.GetDownsamplingBracket(i, minShift, maxShift);
-    if (i >= decoded_passes_per_ac_group_[ac_group_id] &&
-        i < decoded_passes_per_ac_group_[ac_group_id] + num_passes) {
+    bool modular_pass_ready = true;
+    if (i < pass0 + num_passes) {
       JXL_RETURN_IF_ERROR(modular_frame_decoder_.DecodeGroup(
-          mrect, br[i - decoded_passes_per_ac_group_[ac_group_id]], minShift,
-          maxShift, ModularStreamId::ModularAC(ac_group_id, i),
+          mrect, br[i - pass0], minShift, maxShift,
+          ModularStreamId::ModularAC(ac_group_id, i),
           /*zerofill=*/false, dec_state_, &render_pipeline_input,
-          /*allow_truncated=*/false, &should_run_pipeline));
-    } else if (i >= decoded_passes_per_ac_group_[ac_group_id] + num_passes &&
-               force_draw) {
+          /*allow_truncated=*/false, &modular_pass_ready));
+    } else {
       JXL_RETURN_IF_ERROR(modular_frame_decoder_.DecodeGroup(
           mrect, nullptr, minShift, maxShift,
           ModularStreamId::ModularAC(ac_group_id, i), /*zerofill=*/true,
           dec_state_, &render_pipeline_input,
-          /*allow_truncated=*/false, &should_run_pipeline));
+          /*allow_truncated=*/false, &modular_pass_ready));
     }
+    if (modular_pass_ready) modular_ready = true;
   }
   decoded_passes_per_ac_group_[ac_group_id] += num_passes;
 
@@ -527,7 +531,7 @@ Status FrameDecoder::ProcessACGroup(size_t ac_group_id,
   }
 
   if (!modular_frame_decoder_.UsesFullImage() && !decoded_->IsJPEG()) {
-    if (should_run_pipeline) {
+    if (should_run_pipeline && modular_ready) {
       render_pipeline_input.Done();
     } else if (force_draw) {
       return JXL_FAILURE("Modular group decoding failed.");
@@ -853,13 +857,11 @@ Status FrameDecoder::FinalizeFrame() {
     // Nothing to do.
     return true;
   }
-  if (!finalized_dc_) {
-    // We don't have all of DC, and render pipeline is not created yet, so we
-    // can not call Flush() yet.
-    return JXL_FAILURE("FinalizeFrame called before DC was fully decoded");
-  }
 
-  JXL_RETURN_IF_ERROR(Flush());
+  // undo global modular transforms and copy int pixel buffers to float ones
+  JXL_RETURN_IF_ERROR(
+      modular_frame_decoder_.FinalizeDecoding(dec_state_, pool_,
+                                              /*inplace=*/true));
 
   if (frame_header_.CanBeReferenced()) {
     auto& info = dec_state_->shared_storage

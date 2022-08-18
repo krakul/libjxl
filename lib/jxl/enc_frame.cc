@@ -69,6 +69,22 @@
 namespace jxl {
 namespace {
 
+PassDefinition progressive_passes_dc_vlf_lf_full_ac[] = {
+    {/*num_coefficients=*/2, /*shift=*/0,
+     /*suitable_for_downsampling_of_at_least=*/4},
+    {/*num_coefficients=*/3, /*shift=*/0,
+     /*suitable_for_downsampling_of_at_least=*/2},
+    {/*num_coefficients=*/8, /*shift=*/0,
+     /*suitable_for_downsampling_of_at_least=*/0},
+};
+
+PassDefinition progressive_passes_dc_quant_ac_full_ac[] = {
+    {/*num_coefficients=*/8, /*shift=*/1,
+     /*suitable_for_downsampling_of_at_least=*/2},
+    {/*num_coefficients=*/8, /*shift=*/0,
+     /*suitable_for_downsampling_of_at_least=*/0},
+};
+
 void ClusterGroups(PassesEncoderState* enc_state) {
   if (enc_state->shared.frame_header.passes.num_passes > 1) {
     // TODO(veluca): implement this for progressive modes.
@@ -604,7 +620,7 @@ class LossyFrameEncoder {
     std::vector<int> qt(192);
     for (size_t c = 0; c < 3; c++) {
       size_t jpeg_c = jpeg_c_map[c];
-      const int* quant =
+      const int32_t* quant =
           jpeg_data.quant[jpeg_data.components[jpeg_c].quant_idx].values.data();
 
       dcquantization[c] = 255 * 8.0f / quant[0];
@@ -629,7 +645,7 @@ class LossyFrameEncoder {
     shared.quantizer.RecomputeFromGlobalScale();
 
     // Per-block dequant scaling should be 1.
-    FillImage(static_cast<int>(shared.quantizer.InvGlobalScale()),
+    FillImage(static_cast<int32_t>(shared.quantizer.InvGlobalScale()),
               &shared.raw_quant_field);
 
     std::vector<int32_t> scaled_qtable(192);
@@ -1076,11 +1092,65 @@ Status EncodeFrame(const CompressParams& cparams_orig,
                    const ImageBundle& ib, PassesEncoderState* passes_enc_state,
                    const JxlCmsInterface& cms, ThreadPool* pool,
                    BitWriter* writer, AuxOut* aux_out) {
+  CompressParams cparams = cparams_orig;
+  if (cparams_orig.target_bitrate > 0.0f &&
+      frame_info.frame_type == FrameType::kRegularFrame) {
+    cparams.target_bitrate = 0.0f;
+    const float target_bitrate = cparams_orig.target_bitrate;
+    float bitrate = 0.0f;
+    float prev_bitrate = 0.0f;
+    float rescale = 1.0f;
+    size_t prev_bits = 0;
+    float error = 0.0f;
+    float best_error = 100.0f;
+    float best_rescale = 1.0f;
+    for (size_t i = 0; i < 10; ++i) {
+      std::unique_ptr<PassesEncoderState> state =
+          jxl::make_unique<PassesEncoderState>();
+      BitWriter bw;
+      JXL_CHECK(EncodeFrame(cparams, frame_info, metadata, ib, state.get(), cms,
+                            pool, &bw, nullptr));
+      bitrate = bw.BitsWritten() * 1.0 / (ib.xsize() * ib.ysize());
+      error = target_bitrate / bitrate - 1.0f;
+      if (std::abs(error) < std::abs(best_error)) {
+        best_error = error;
+        best_rescale = cparams.quant_ac_rescale;
+      }
+      if (bw.BitsWritten() == prev_bits || std::abs(error) < 0.0005f) {
+        break;
+      }
+      float lambda = 1.0f;
+      if (i > 0) {
+        lambda = (((bitrate / prev_bitrate) - 1.0f) / (rescale - 1.0f));
+      }
+      rescale = (1.0f + ((target_bitrate / bitrate) - 1.0f) / lambda);
+      if (rescale < 0.0f) {
+        break;
+      }
+      cparams.quant_ac_rescale *= rescale;
+      prev_bitrate = bitrate;
+      prev_bits = bw.BitsWritten();
+    }
+    if (aux_out) {
+      aux_out->max_quant_rescale = best_rescale;
+      aux_out->min_quant_rescale = best_rescale;
+      aux_out->min_bitrate_error = best_error;
+      aux_out->max_bitrate_error = best_error;
+    }
+    cparams.quant_ac_rescale = best_rescale;
+  }
   ib.VerifyMetadata();
 
   passes_enc_state->special_frames.clear();
 
-  CompressParams cparams = cparams_orig;
+  if (cparams.qprogressive_mode) {
+    passes_enc_state->progressive_splitter.SetProgressiveMode(
+        ProgressiveMode{progressive_passes_dc_quant_ac_full_ac});
+  } else if (cparams.progressive_mode) {
+    passes_enc_state->progressive_splitter.SetProgressiveMode(
+        ProgressiveMode{progressive_passes_dc_vlf_lf_full_ac});
+  }
+
   JXL_RETURN_IF_ERROR(ParamsPostInit(&cparams));
 
   if (cparams.progressive_dc < 0) {
